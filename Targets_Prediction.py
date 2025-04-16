@@ -1,6 +1,8 @@
 ### IMPORT LIBRARIES ###
 # make sure libraries are installed on your PC
 # install libraries via 'pip install xxx'
+import os
+
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -11,88 +13,78 @@ from selenium.common.exceptions import NoSuchElementException
 import argparse
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
-from bioservices import UniProt
-
+import sys
+import random
+import time
+from pathlib import Path
+# from bioservices import UniProt
 ### DEFINE FUNCTIONs ###
+
+def random_sleep(min_time=1, max_time=3):
+    """Generate a random sleep time between min_time and max_time."""
+    sleep_time = random.uniform(min_time, max_time)
+    time.sleep(sleep_time)
+    return sleep_time
+
 ## Crawl data from SwissTargetPrediction
-def SwissCrawler (smiles, CpdName):
-    SwissUrl = 'http://www.swisstargetprediction.ch/index.php'
-    platform = 'SwissTargetPrediction' 
-    driver.get(SwissUrl) 
-    SearchField = driver.find_element(By.NAME, 'smiles') 
-    SearchField.send_keys(smiles) 
-    SearchField.submit() 
-    dfs = []  
-    max_retries = 3  
-    retries = 0  
-    all_pages_processed = False
-    while retries < max_retries and not all_pages_processed:
-        try:
-            WebDriverWait(driver, 200).until(EC.presence_of_element_located((By.XPATH, '//*[@id="resultTable"]/tbody')))
-            CurrUrl = driver.current_url 
-            df = pd.read_html(CurrUrl) 
-            df = df[0] 
-            cols = [col for col in df.columns if col in ['Uniprot ID', 'Probability*']]
-            df = df[cols]          
-            df.insert(0, 'compound', CpdName)   
-            df.insert(1, 'platform', platform)  
-            df = df.rename(columns={"Uniprot ID": "uniprotID", "Probability*": "prob"}) 
-            dfs.append(df)  
-            ## Determine whether the current page is the last page. If it is not the last page, click the "Next" button to load the next page.
-            try:
-                next_button = driver.find_element(By.XPATH, '//*[@id="resultTable_next"]')
-                if (df['prob'] == 0).any():  
-                    all_pages_processed = True
-                elif next_button.get_attribute("class") == "paginate_button next disabled":
-                    all_pages_processed = True  
-            except NoSuchElementException:
-                all_pages_processed = True  
-            ## If the current page is not the last page, click the "Next" button to load the next page.
-            if not all_pages_processed:
-                next_button.click()
-                WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, '//*[@id="resultTable"]/tbody')))
-            else:
-                break
-        ## Handling exceptional situations: page loading timeout, pop-up warning boxes, and other exceptions.
-        except TimeoutException:
-            retries += 1
-            if retries >= max_retries:
-                all_pages_processed = True
-                CurrUrl = driver.current_url
-                dfs = pd.DataFrame(columns=['compound', 'platform', 'uniprotID', 'prob'])
-                dfs = pd.concat([dfs, pd.DataFrame({'compound': [CpdName],
-                                                'platform': [platform],
-                                                'uniprotID': ['result page reached timeout'],
-                                                'prob': [CurrUrl]})], ignore_index=True)
-                return dfs
-        except UnexpectedAlertPresentException:
-            retries += 1
-            if retries >= max_retries:
-                all_pages_processed = True
-                alert = driver.switch_to.alert
-                dfs = pd.DataFrame(columns=['compound', 'platform', 'uniprotID', 'prob'])
-                dfs = pd.concat([dfs, pd.DataFrame({'compound': [CpdName],
-                                                'platform': [platform],
-                                                'uniprotID': ['error message'],
-                                                'prob': [alert.text]})], ignore_index=True)
-                alert.accept()
-                return dfs
-        except Exception as e:
-            print(f"Error occurred: {e}")
-            all_pages_processed = True
-            break
-    ## If the page is loaded normally, the data of all pages is merged into one dataframe.        
-    df = pd.concat(dfs, ignore_index=True)
-    ## Retain target data from SwissTargetPrediction database with "Probability*" greater than or equal to 0.6.
+def SwissCrawler (smiles, CpdName, tmp_dir):
+    # CONFIG
+    SwissUrl = 'http://www.swisstargetprediction.ch/'
+    platform = 'SwissTargetPrediction'
+    wait_predict_clickable = 10
+    wait_csv_download_clickable = 300
+    wait_download_finish = 10
+
+    # Open the SwissTargetPrediction website
+    driver.get(SwissUrl)
+    random_sleep()
+
+    # Input SMILES
+    SearchField = driver.find_element(By.NAME, 'smiles')
+    SearchField.send_keys(smiles)
+
+    # Wait until the "Predict" button is clickable
+    WaitButton = WebDriverWait(driver, wait_predict_clickable).until(EC.element_to_be_clickable((By.ID, 'submitButton')))
+    random_sleep()
+
+    # Click the "Predict" button
+    PredictButton = driver.find_element(By.ID, 'submitButton')
+    PredictButton.click()
+
+    # Wait for Prediction to complete, by waiting for the "Download CSV" button to be clickable
+    CsvButtonElement = WebDriverWait(driver, wait_csv_download_clickable).until(
+        # locate the "Download CSV" button using img src, as no other unique identifier is available
+        EC.element_to_be_clickable((By.XPATH, '//button[./img[@src="/images/csv-24.png"]]'))
+    )
+    random_sleep()
+    CsvButtonElement.click()
+
+    # Wait for the CSV file to be downloaded
+    time.sleep(wait_download_finish)
+
+    # Create a DataFrame from the downloaded CSV file
+    SwissTargetPred_df = pd.read_csv(out_dir / 'SwissTargetPrediction.csv')
+    df_row_n = SwissTargetPred_df.shape[0]
+    df = pd.DataFrame({
+        'compound': [CpdName] * df_row_n,
+        'platform': [platform] * df_row_n,
+        'uniprotID': SwissTargetPred_df['Uniprot ID'],
+        'prob': SwissTargetPred_df['Probability*']
+    })
+
+    # Delete the downloaded CSV file
+    os.remove(tmp_dir / 'SwissTargetPrediction.csv')
+
+    # ## Retain target data from SwissTargetPrediction database with "Probability*" greater than or equal to 0.6.
     df = df[df['prob'] >= 0.6]
-    ## Retrieve the entry name corresponding to the UniProt ID from the UniProt database.      
+    ## Retrieve the entry name corresponding to the UniProt ID from the UniProt database.
     def get_uniprot_name(entry):
         u = UniProt(verbose=False)
-        res = u.search(f"{entry}+AND+organism_id:9606", frmt="tsv", columns="id", limit=1)        
+        res = u.search(f"{entry}+AND+organism_id:9606", frmt="tsv", columns="id", limit=1)
         if len(res.split('\n')) < 2:
             Entr = 'no_entry_found_in_uniprot'
         else:
-            Entr = res.split('\n')[1].split('\t')[0]        
+            Entr = res.split('\n')[1].split('\t')[0]
         return Entr
     def get_uniprot_names(df):
         def process_entry(entry):
@@ -115,7 +107,7 @@ def SwissCrawler (smiles, CpdName):
         df = df.drop('uniprotID', axis=1)
         return df
     df = get_uniprot_names(df)
-    return df    
+    return df
 
 ## Crawl data from SEA       
 def SEACrawler (smiles, CpdName):
@@ -321,10 +313,16 @@ if __name__ == '__main__':
     ## The following code is used to start crawling.
     options = webdriver.ChromeOptions()
     options.add_experimental_option('excludeSwitches', ['enable-logging'])
+    out_dir = Path(args.output).parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    options.add_experimental_option("prefs", {  # Set download directory for SwissTargetPrediction
+        "download.default_directory": str(out_dir),
+        "download.prompt_for_download": False,
+        "download.directory_upgrade": True,
+        "safebrowsing.enabled": True
+    })
     driver = webdriver.Chrome(options=options)
-
-    # driver = webdriver.Chrome('C:\\Windows\\chromedriver.exe', options=options)
-    cols = ['compound','platform','prob','UniProt_name'] 
+    cols = ['compound','platform','prob','UniProt_name']
     results = pd.DataFrame(columns=cols)
     results.to_csv(args.output,sep=',')     
     ## The following code is used to crawl through the 3 target prediction servers.
@@ -332,16 +330,18 @@ if __name__ == '__main__':
     for index, row in data.iterrows():
         CpdName = row['name']
         smiles = row['smiles']
-        SwissResult = SwissCrawler(smiles, CpdName)
+        SwissResult = SwissCrawler(smiles, CpdName, tmp_dir=out_dir)
         SEAResult = SEACrawler(smiles, CpdName)
-        SuperPredResult = SuperPredCrawler(smiles, CpdName)        
+        SuperPredResult = SuperPredCrawler(smiles, CpdName)
         with open (args.output,'a',newline='') as f:
+            pass
             SwissResult.to_csv(f,sep=',',header=False)
             SEAResult.to_csv(f,sep=',',header=False)
-            SuperPredResult.to_csv(f,sep=',',header=False)           
+            SuperPredResult.to_csv(f,sep=',',header=False)
         print('         screened {} of {} molecules ({})'.format(index+1, rowcount, CpdName))
     ## The following code is used to close the browser.
-    driver.quit() 
+    # driver.quit()
     print('') 
     print('     Finished Analysis')
     print('     Results are now available in "{}"'.format(args.output))
+
