@@ -340,7 +340,7 @@ if __name__ == '__main__':
             SuperPredResult.to_csv(f,sep=',',header=False)
         print('         screened {} of {} molecules ({})'.format(index+1, rowcount, CpdName))
     ## The following code is used to close the browser.
-    # driver.quit()
+    driver.quit()
     print('') 
     print('     Finished Analysis')
     print('     Results are now available in "{}"'.format(args.output))
